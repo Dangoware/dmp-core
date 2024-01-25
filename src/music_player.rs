@@ -15,8 +15,6 @@ use gstreamer::prelude::*;
 use chrono::Duration;
 use thiserror::Error;
 
-const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(10);
-
 #[derive(Debug)]
 pub enum PlayerCmd {
     Playing,
@@ -150,6 +148,7 @@ impl Player {
             let mut start_time: Option<Duration> = None;
             let mut end_time: Option<Duration> = None;
             let mut switching = false;
+            let mut sent_atf = false;
             loop {
                 // Check for new messages or updates about how to proceed
                 let message = match monitor_rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -157,7 +156,7 @@ impl Player {
                     Err(_) => None,
                 };
 
-                // Get the updated position from playbin
+                // Get the updated position from playbin only in 100ms intervals minimum
                 let mut pos_temp = playbin_arc
                     .read()
                     .unwrap()
@@ -178,8 +177,9 @@ impl Player {
                             .unwrap()
                             .set_state(gst::State::Ready)
                             .expect("Unable to set the pipeline state");
-                    } else if pos_temp.unwrap() >= finish_point {
+                    } else if pos_temp.unwrap() >= finish_point && !sent_atf {
                         let _ = play_state_tx.try_send(PlayerCmd::AboutToFinish);
+                        sent_atf = true;
                     }
 
                     // This has to be done AFTER the current time in the file
@@ -193,6 +193,7 @@ impl Player {
                         start_time  = Some(start);
                         end_time    = Some(end);
                         switching   = false;
+                        sent_atf    = false;
                     },
 
                     // Exit the loop immediately, terminating the thread
@@ -202,16 +203,18 @@ impl Player {
 
                     // The player is doing nothing
                     Some(MonitorCmd::Idle) => {
-                        start_time = None;
-                        end_time = None;
-                        switching = false;
+                        start_time  = None;
+                        end_time    = None;
+                        switching   = false;
+                        sent_atf    = false;
                     },
 
                     // The player isn't playing right now, don't try to update!!
                     Some(MonitorCmd::Switching) => {
-                        start_time = None;
-                        end_time = None;
-                        switching = true;
+                        start_time  = None;
+                        end_time    = None;
+                        switching   = true;
+                        sent_atf    = false;
                     },
 
                     // Return the playback time immediately through the channel
@@ -220,8 +223,6 @@ impl Player {
                     },
                     _ => ()
                 }
-
-                std::thread::sleep(std::time::Duration::from_millis(10));
             }
         });
 
@@ -344,11 +345,11 @@ impl Player {
 
                 self.play().unwrap();
 
-                self.monitor_tx.send(MonitorCmd::Idle)?;
+                self.monitor_tx.send(MonitorCmd::Idle).unwrap();
 
                 while uri.get::<&str>().unwrap_or("")
                     == self.property("current-uri").get::<&str>().unwrap_or("")
-                    || self.raw_position().is_none()
+                    || self.position()?.is_none()
                 {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
@@ -443,18 +444,10 @@ impl Player {
     pub fn position(&mut self) -> Result<Option<Duration>, Box<dyn Error>> {
         self.monitor_tx.send(MonitorCmd::PlaybackTime)?;
 
-        match self.position_rx.recv_timeout(DEFAULT_TIMEOUT) {
+        match self.position_rx.recv() {
             Ok(result) => Ok(result),
             Err(err) => Err(err.into()),
         }
-    }
-
-    pub fn raw_position(&self) -> Option<Duration> {
-        self.playbin
-            .read()
-            .unwrap()
-            .query_position::<ClockTime>()
-            .map(|pos| Duration::nanoseconds(pos.nseconds() as i64))
     }
 
     /// Get the duration of the currently playing track
