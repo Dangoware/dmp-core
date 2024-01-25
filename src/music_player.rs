@@ -17,7 +17,7 @@ use thiserror::Error;
 
 #[derive(Debug)]
 pub enum PlayerCmd {
-    Play,
+    Playing(Option<Duration>),
     Pause,
     Eos,
     AboutToFinish,
@@ -77,29 +77,36 @@ pub enum PlayerError {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum PlaybackStats {
+enum MonitorCommand {
     Idle,
+
+    /// The song is currently switching
     Switching,
-    Playing{
+
+    /// A new thing has been loaded
+    Loaded {
         start: Duration,
         end:   Duration,
     },
-    Finished // When this is sent, the thread will die!
+
+    /// Causes the thread to send the current time
+    PlaybackTime,
+
+    /// When this is sent, the monitoring thread will die!
+    Finished
 }
 
 /// An instance of a music player with a GStreamer backend
 pub struct Player {
     source:     Option<URI>,
     //pub message_tx: Sender<PlayerCmd>,
-    pub message_rx: crossbeam::channel::Receiver<PlayerCmd>,
-
-    playback_tx: crossbeam::channel::Sender<PlaybackStats>,
+    playback_rx: crossbeam::channel::Receiver<PlayerCmd>,
+    playback_tx: crossbeam::channel::Sender<MonitorCommand>,
     playbin:    Arc<RwLock<Element>>,
     volume:     f64,
     start:      Option<Duration>,
     end:        Option<Duration>,
     paused:     bool,
-    position:   Arc<RwLock<Option<Duration>>>,
 }
 
 impl Player {
@@ -133,55 +140,73 @@ impl Player {
         playbin.write().unwrap().set_property_from_value("flags", &flags);
         playbin.write().unwrap().set_property("instant-uri", true);
 
-        let position = Arc::new(RwLock::new(None));
-
         // Set up the thread to monitor the position
         let (playback_tx, playback_rx) = unbounded();
-        let (stat_tx, stat_rx) = unbounded::<PlaybackStats>();
-        let position_update = Arc::clone(&position);
+        let (stat_tx, stat_rx) = unbounded::<MonitorCommand>();
+
+        // This thread monitors the playback of the gstreamer playbin3
         let _playback_monitor = std::thread::spawn(move || { //TODO: Figure out how to return errors nicely in threads
-            let mut stats = PlaybackStats::Idle;
-            let mut pos_temp;
+            let mut pos_temp = None;
+
+            let mut start_time: Option<Duration> = None;
+            let mut end_time: Option<Duration> = None;
             loop {
                 // Check for new messages or updates about how to proceed
-                if let Ok(res) = stat_rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                    stats = res
+                let message = match stat_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                    Ok(mes) => Some(mes),
+                    Err(_) => None,
+                };
+
+                if start_time.is_some() && end_time.is_some() {
+                    pos_temp = playbin_arc
+                        .read()
+                        .unwrap()
+                        .query_position::<ClockTime>()
+                        .map(|pos| Duration::nanoseconds(pos.nseconds() as i64));
+
+                    // Check if the current playback position is close to the end
+                    let finish_point = end_time.unwrap() - Duration::milliseconds(250);
+                    if pos_temp.unwrap() >= end_time.unwrap() {
+                        let _ = playback_tx.try_send(PlayerCmd::Eos);
+                        playbin_arc
+                            .write()
+                            .unwrap()
+                            .set_state(gst::State::Ready)
+                            .expect("Unable to set the pipeline state");
+                    } else if pos_temp.unwrap() >= finish_point {
+                        let _ = playback_tx.try_send(PlayerCmd::AboutToFinish);
+                    }
+
+                    // This has to be done AFTER the current time in the file
+                    // is calculated, or everything else is wrong
+                    pos_temp = Some(pos_temp.unwrap() - start_time.unwrap())
                 }
 
-                pos_temp = playbin_arc
-                    .read()
-                    .unwrap()
-                    .query_position::<ClockTime>()
-                    .map(|pos| Duration::nanoseconds(pos.nseconds() as i64));
-
-                match stats {
-                    PlaybackStats::Playing{start, end} if pos_temp.is_some() => {
-                        // Check if the current playback position is close to the end
-                        let finish_point = end - Duration::milliseconds(250);
-                        if pos_temp.unwrap() >= end {
-                            let _ = playback_tx.try_send(PlayerCmd::Eos);
-                            playbin_arc
-                                .write()
-                                .unwrap()
-                                .set_state(gst::State::Ready)
-                                .expect("Unable to set the pipeline state");
-                        } else if pos_temp.unwrap() >= finish_point {
-                            let _ = playback_tx.try_send(PlayerCmd::AboutToFinish);
-                        }
-
-                        // This has to be done AFTER the current time in the file
-                        // is calculated, or everything else is wrong
-                        pos_temp = Some(pos_temp.unwrap() - start)
+                match message {
+                    // A new start and end time were provided, use them
+                    Some(MonitorCommand::Loaded{start, end}) => {
+                        start_time  = Some(start);
+                        end_time    = Some(end);
                     },
-                    PlaybackStats::Finished => {
-                        *position_update.write().unwrap() = None;
+
+                    // Exit the loop immediately, terminating the thread
+                    Some(MonitorCommand::Finished) => {
                         break
                     },
-                    PlaybackStats::Idle | PlaybackStats::Switching => println!("waiting!"),
+
+                    // The player isn't playing right now, don't try to update!!
+                    Some(MonitorCommand::Idle) | Some(MonitorCommand::Switching) => {
+                        start_time = None;
+                        end_time = None;
+                    },
+
+                    // Return the playback time immediately through the channel
+                    Some(MonitorCommand::PlaybackTime) => {
+                        let _ = playback_tx.try_send(PlayerCmd::Playing(pos_temp));
+                    }
+
                     _ => ()
                 }
-
-                *position_update.write().unwrap() = pos_temp;
             }
         });
 
@@ -243,13 +268,12 @@ impl Player {
         Ok(Self {
             source,
             playbin,
-            message_rx: playback_rx,
+            playback_rx,
             playback_tx: stat_tx,
             volume: 1.0,
             start: None,
             end: None,
             paused: false,
-            position,
         })
     }
 
@@ -257,14 +281,20 @@ impl Player {
         &self.source
     }
 
-    pub fn enqueue_next(&mut self, next_track: &URI) {
-        self.set_source(next_track);
+    /// Get the last item in the playback monitor's channel, or time out if
+    /// not recieved within `timeout`
+    pub fn get_response(&self, timeout: std::time::Duration) -> Result<PlayerCmd, Box<dyn Error>> {
+        Ok(self.playback_rx.recv_timeout(timeout)?)
+    }
+
+    pub fn enqueue_next(&mut self, next_track: &URI) -> Result<(), Box<dyn Error>> {
+        self.set_source(next_track)
     }
 
     /// Set the playback URI
-    fn set_source(&mut self, source: &URI) {
+    fn set_source(&mut self, source: &URI) -> Result<(), Box<dyn Error>> {
         // Make sure the playback tracker knows the stuff is stopped
-        self.playback_tx.send(PlaybackStats::Switching).unwrap();
+        self.playback_tx.send(MonitorCommand::Switching).unwrap();
 
         let uri = self.playbin.read().unwrap().property_value("current-uri");
         self.source = Some(source.clone());
@@ -280,7 +310,7 @@ impl Player {
                 self.end = Some(Duration::from_std(*end).unwrap());
 
                 // Send the updated position to the tracker
-                self.playback_tx.send(PlaybackStats::Playing{
+                self.playback_tx.send(MonitorCommand::Loaded{
                     start: self.start.unwrap(),
                     end: self.end.unwrap()
                 }).unwrap();
@@ -290,7 +320,7 @@ impl Player {
                 let now = std::time::Instant::now();
                 while now.elapsed() < std::time::Duration::from_millis(20) {
                     if self.seek_to(Duration::from_std(*start).unwrap()).is_ok() {
-                        return;
+                        return Ok(());
                     }
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
@@ -306,7 +336,7 @@ impl Player {
 
                 while uri.get::<&str>().unwrap_or("")
                     == self.property("current-uri").get::<&str>().unwrap_or("")
-                    || self.position().is_none()
+                    || self.position()?.is_none()
                 {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
@@ -315,12 +345,13 @@ impl Player {
                 self.end = self.raw_duration();
 
                 // Send the updated position to the tracker
-                self.playback_tx.send(PlaybackStats::Playing{
+                self.playback_tx.send(MonitorCommand::Loaded{
                     start: self.start.unwrap(),
                     end: self.end.unwrap()
                 }).unwrap();
             }
         }
+        Ok(())
     }
 
     /// Gets a mutable reference to the playbin element
@@ -397,8 +428,13 @@ impl Player {
     }
 
     /// Get the current playback position of the player
-    pub fn position(&mut self) -> Option<Duration> {
-        *self.position.read().unwrap()
+    pub fn position(&mut self) -> Result<Option<Duration>, Box<dyn Error>> {
+        self.playback_tx.send(MonitorCommand::PlaybackTime);
+
+        match self.get_response(std::time::Duration::from_millis(10))? {
+            PlayerCmd::Playing(time) => Ok(time),
+            _ => Err("Something bad happened!".into())
+        }
     }
 
     /// Get the duration of the currently playing track
@@ -419,7 +455,9 @@ impl Player {
 
     /// Seek relative to the current position
     pub fn seek_by(&mut self, seek_amount: Duration) -> Result<(), Box<dyn Error>> {
-        let time_pos = match *self.position.read().unwrap() {
+        let pos = self.position()?;
+
+        let time_pos = match pos {
             Some(pos) => pos,
             None => return Err("No position".into()),
         };
@@ -478,10 +516,9 @@ impl Player {
         self.ready()?;
 
         // Send the updated position to the tracker
-        self.playback_tx.send(PlaybackStats::Idle).unwrap();
+        self.playback_tx.send(MonitorCommand::Idle).unwrap();
 
         // Set all positions to none
-        *self.position.write().unwrap() = None;
         self.start = None;
         self.end = None;
         Ok(())
@@ -496,6 +533,6 @@ impl Drop for Player {
             .unwrap()
             .set_state(gst::State::Null)
             .expect("Unable to set the pipeline to the `Null` state");
-        let _ = self.playback_tx.send(PlaybackStats::Finished);
+        let _ = self.playback_tx.send(MonitorCommand::Finished);
     }
 }
