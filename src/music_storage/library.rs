@@ -12,9 +12,9 @@ use file_format::{FileFormat, Kind};
 use glib::filename_to_uri;
 use lofty::{AudioFile, ItemKey, ItemValue, ParseOptions, Probe, TagType, TaggedFileExt};
 use rcue::parser::parse_from_file;
-use uuid::Uuid;
 use std::fs;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 use walkdir::WalkDir;
 
 // Time
@@ -347,7 +347,8 @@ impl MusicLibrary {
     pub fn init(config: Arc<RwLock<Config>>, uuid: Uuid) -> Result<Self, Box<dyn Error>> {
         let global_config = &*config.read().unwrap();
 
-        let library: MusicLibrary = match global_config.libraries.get_library(&uuid)?.path.exists() {
+        let library: MusicLibrary = match global_config.libraries.get_library(&uuid)?.path.exists()
+        {
             true => read_file(global_config.libraries.get_library(&uuid)?.path)?,
             false => {
                 // If the library does not exist, re-create it
@@ -431,10 +432,7 @@ impl MusicLibrary {
     }
 
     /// Finds all the audio files within a specified folder
-    pub fn scan_folder(
-        &mut self,
-        target_path: &str,
-    ) -> Result<i32, Box<dyn std::error::Error>> {
+    pub fn scan_folder(&mut self, target_path: &str) -> Result<i32, Box<dyn std::error::Error>> {
         let mut total = 0;
         let mut errors = 0;
         for target_file in WalkDir::new(target_path)

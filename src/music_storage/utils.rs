@@ -1,12 +1,12 @@
-use std::fs::{File, self};
+use std::error::Error;
+use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
-use std::error::Error;
 
-use walkdir::WalkDir;
+use deunicode::deunicode_with_tofu;
 use file_format::{FileFormat, Kind};
 use snap;
-use deunicode::deunicode_with_tofu;
+use walkdir::WalkDir;
 
 use super::library::{AlbumArt, URI};
 
@@ -50,7 +50,9 @@ pub(super) fn write_file<T: serde::Serialize>(
 
 /// Read a file serialized out with [write_file] and turn it into
 /// the desired structure
-pub(super) fn read_file<T: for<'de> serde::Deserialize<'de>>(path: PathBuf) -> Result<T, Box<dyn Error>> {
+pub(super) fn read_file<T: for<'de> serde::Deserialize<'de>>(
+    path: PathBuf,
+) -> Result<T, Box<dyn Error>> {
     // Create a new snap reader over the file
     let file_reader = BufReader::new(File::open(path)?);
     let mut d = snap::read::FrameDecoder::new(file_reader);

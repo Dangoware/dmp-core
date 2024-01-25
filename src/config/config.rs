@@ -1,15 +1,16 @@
 use std::{
+    fs::{self, File, OpenOptions},
+    io::{Error, Read, Write},
     path::PathBuf,
-    fs::{File, OpenOptions, self},
-    io::{Error, Write, Read}, sync::{Arc, RwLock},
+    sync::{Arc, RwLock},
 };
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use serde_json::to_string_pretty;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::music_storage::library::{MusicLibrary, self};
+use crate::music_storage::library::{self, MusicLibrary};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigLibrary {
@@ -43,7 +44,7 @@ impl ConfigLibrary {
     pub fn open(&self) -> Result<File, Error> {
         match File::open(self.path.as_path()) {
             Ok(ok) => Ok(ok),
-            Err(e) => Err(e)
+            Err(e) => Err(e),
         }
     }
 }
@@ -64,7 +65,7 @@ impl ConfigLibraries {
     pub fn get_default(&self) -> Result<&ConfigLibrary, ConfigError> {
         for library in &self.libraries {
             if library.uuid == self.default_library {
-                return Ok(library)
+                return Ok(library);
             }
         }
         Err(ConfigError::NoDefaultLibrary)
@@ -73,7 +74,7 @@ impl ConfigLibraries {
     pub fn get_library(&self, uuid: &Uuid) -> Result<ConfigLibrary, ConfigError> {
         for library in &self.libraries {
             if &library.uuid == uuid {
-                return Ok(library.to_owned())
+                return Ok(library.to_owned());
             }
         }
         Err(ConfigError::NoConfigLibrary(*uuid))
@@ -82,7 +83,7 @@ impl ConfigLibraries {
     pub fn uuid_exists(&self, uuid: &Uuid) -> bool {
         for library in &self.libraries {
             if &library.uuid == uuid {
-                return true
+                return true;
             }
         }
         false
@@ -114,7 +115,12 @@ impl Config {
     pub fn write_file(&self) -> Result<(), Error> {
         let mut writer = self.path.clone();
         writer.set_extension("tmp");
-        let mut file = OpenOptions::new().create(true).truncate(true).read(true).write(true).open(&writer)?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&writer)?;
         let config = to_string_pretty(self)?;
         // dbg!(&config);
 
@@ -137,23 +143,30 @@ pub enum ConfigError {
     #[error("No Library Found for {0}!")]
     NoConfigLibrary(Uuid),
     #[error("There is no Default Library for this Config")]
-    NoDefaultLibrary
+    NoDefaultLibrary,
 }
-
 
 #[test]
 fn config_test() {
-    let lib_a = ConfigLibrary::new(PathBuf::from("test-config/library1"), String::from("library1"), None);
-    let lib_b = ConfigLibrary::new(PathBuf::from("test-config/library2"), String::from("library2"), None);
-    let lib_c = ConfigLibrary::new(PathBuf::from("test-config/library3"), String::from("library3"), None);
+    let lib_a = ConfigLibrary::new(
+        PathBuf::from("test-config/library1"),
+        String::from("library1"),
+        None,
+    );
+    let lib_b = ConfigLibrary::new(
+        PathBuf::from("test-config/library2"),
+        String::from("library2"),
+        None,
+    );
+    let lib_c = ConfigLibrary::new(
+        PathBuf::from("test-config/library3"),
+        String::from("library3"),
+        None,
+    );
     let config = Config {
         path: PathBuf::from("test-config/config_test.json"),
         libraries: ConfigLibraries {
-            libraries: vec![
-                lib_a.clone(),
-                lib_b.clone(),
-                lib_c.clone(),
-            ],
+            libraries: vec![lib_a.clone(), lib_b.clone(), lib_c.clone()],
             ..Default::default()
         },
         ..Default::default()
@@ -163,7 +176,6 @@ fn config_test() {
     MusicLibrary::init(arc.clone(), lib_a.uuid.clone()).unwrap();
     MusicLibrary::init(arc.clone(), lib_b.uuid.clone()).unwrap();
     MusicLibrary::init(arc.clone(), lib_c.uuid.clone()).unwrap();
-
 }
 
 #[test]

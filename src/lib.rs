@@ -8,9 +8,9 @@ pub mod music_storage {
     pub mod db_reader;
 }
 
-pub mod music_controller{
-    pub mod controller;
+pub mod music_controller {
     pub mod connections;
+    pub mod controller;
 }
 
 pub mod music_player;

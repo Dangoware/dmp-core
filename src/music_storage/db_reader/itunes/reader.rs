@@ -117,7 +117,12 @@ impl ExternalLibrary for ITunesLibrary {
             buf.clear();
         }
         let elasped = now.elapsed();
-        println!("\n\niTunesReader grabbed {} songs in {:#?} seconds\nIDs Skipped: {}", count3, elasped.as_secs(), count4);
+        println!(
+            "\n\niTunesReader grabbed {} songs in {:#?} seconds\nIDs Skipped: {}",
+            count3,
+            elasped.as_secs(),
+            count4
+        );
         let mut lib = ITunesLibrary::new();
         lib.tracks.append(converted_songs.as_mut());
         lib

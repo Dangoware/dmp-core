@@ -4,11 +4,9 @@ use chrono::Duration;
 use walkdir::Error;
 
 use super::{
+    db_reader::{extern_library::ExternalLibrary, itunes::reader::ITunesLibrary},
     library::{AlbumArt, Song, Tag},
-    music_collection::MusicCollection, db_reader::{
-        itunes::reader::ITunesLibrary,
-        extern_library::ExternalLibrary
-    },
+    music_collection::MusicCollection,
 };
 
 use m3u8_rs::{MediaPlaylist, MediaPlaylistType, MediaSegment};

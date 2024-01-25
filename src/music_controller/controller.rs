@@ -4,11 +4,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use crate::{
-    music_player::Player,
-    music_storage::library::Song,
-    config::config::Config
-};
+use crate::{config::config::Config, music_player::Player, music_storage::library::Song};
 
 struct Queue {
     player: Player,

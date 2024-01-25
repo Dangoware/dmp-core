@@ -86,27 +86,27 @@ enum MonitorCmd {
     /// A new thing has been loaded
     Loaded {
         start: Duration,
-        end:   Duration,
+        end: Duration,
     },
 
     /// Causes the thread to send the current time
     PlaybackTime,
 
     /// When this is sent, the monitoring thread will die!
-    Finished
+    Finished,
 }
 
 /// An instance of a music player with a GStreamer backend
 pub struct Player {
-    source:     Option<URI>,
+    source: Option<URI>,
     pub play_state_rx: crossbeam::channel::Receiver<PlayerCmd>,
     position_rx: crossbeam::channel::Receiver<Option<Duration>>,
     monitor_tx: crossbeam::channel::Sender<MonitorCmd>,
-    playbin:    Arc<RwLock<Element>>,
-    volume:     f64,
-    start:      Option<Duration>,
-    end:        Option<Duration>,
-    paused:     bool,
+    playbin: Arc<RwLock<Element>>,
+    volume: f64,
+    start: Option<Duration>,
+    end: Option<Duration>,
+    paused: bool,
 }
 
 impl Player {
@@ -117,9 +117,7 @@ impl Player {
         let _guard = ctx.acquire();
         let mainloop = glib::MainLoop::new(Some(&ctx), false);
 
-        let playbin_arc = Arc::new(RwLock::new(
-            gst::ElementFactory::make("playbin3").build()?,
-        ));
+        let playbin_arc = Arc::new(RwLock::new(gst::ElementFactory::make("playbin3").build()?));
 
         let playbin = playbin_arc.clone();
 
@@ -137,14 +135,18 @@ impl Player {
             .build()
             .ok_or(PlayerError::Build)?;
 
-        playbin.write().unwrap().set_property_from_value("flags", &flags);
+        playbin
+            .write()
+            .unwrap()
+            .set_property_from_value("flags", &flags);
         playbin.write().unwrap().set_property("instant-uri", true);
 
         // This thread monitors the playback position of the playbin3
         let (play_state_tx, play_state_rx) = unbounded::<PlayerCmd>();
-        let (position_tx, position_rx)  = unbounded::<Option<Duration>>();
-        let (monitor_tx, monitor_rx)    = unbounded::<MonitorCmd>();
-        let _playback_monitor = std::thread::spawn(move || { //TODO: Figure out how to return errors nicely in threads
+        let (position_tx, position_rx) = unbounded::<Option<Duration>>();
+        let (monitor_tx, monitor_rx) = unbounded::<MonitorCmd>();
+        let _playback_monitor = std::thread::spawn(move || {
+            //TODO: Figure out how to return errors nicely in threads
             let mut start_time: Option<Duration> = None;
             let mut end_time: Option<Duration> = None;
             let mut switching = false;
@@ -163,11 +165,7 @@ impl Player {
                     .query_position::<ClockTime>()
                     .map(|pos| Duration::nanoseconds(pos.nseconds() as i64));
 
-                if !switching
-                    && pos_temp.is_some()
-                    && start_time.is_some()
-                    && end_time.is_some()
-                {
+                if !switching && pos_temp.is_some() && start_time.is_some() && end_time.is_some() {
                     // Check if the current playback position is close to the end
                     let finish_point = end_time.unwrap() - Duration::milliseconds(250);
                     if pos_temp.unwrap() >= end_time.unwrap() {
@@ -189,39 +187,37 @@ impl Player {
 
                 match message {
                     // A new start and end time were provided, use them
-                    Some(MonitorCmd::Loaded{start, end}) => {
-                        start_time  = Some(start);
-                        end_time    = Some(end);
-                        switching   = false;
-                        sent_atf    = false;
-                    },
+                    Some(MonitorCmd::Loaded { start, end }) => {
+                        start_time = Some(start);
+                        end_time = Some(end);
+                        switching = false;
+                        sent_atf = false;
+                    }
 
                     // Exit the loop immediately, terminating the thread
-                    Some(MonitorCmd::Finished) => {
-                        break
-                    },
+                    Some(MonitorCmd::Finished) => break,
 
                     // The player is doing nothing
                     Some(MonitorCmd::Idle) => {
-                        start_time  = None;
-                        end_time    = None;
-                        switching   = false;
-                        sent_atf    = false;
-                    },
+                        start_time = None;
+                        end_time = None;
+                        switching = false;
+                        sent_atf = false;
+                    }
 
                     // The player isn't playing right now, don't try to update!!
                     Some(MonitorCmd::Switching) => {
-                        start_time  = None;
-                        end_time    = None;
-                        switching   = true;
-                        sent_atf    = false;
-                    },
+                        start_time = None;
+                        end_time = None;
+                        switching = true;
+                        sent_atf = false;
+                    }
 
                     // Return the playback time immediately through the channel
                     Some(MonitorCmd::PlaybackTime) => {
                         let _ = position_tx.try_send(pos_temp);
-                    },
-                    _ => ()
+                    }
+                    _ => (),
                 }
             }
         });
@@ -321,10 +317,12 @@ impl Player {
                 self.end = Some(Duration::from_std(*end).unwrap());
 
                 // Send the updated position to the tracker
-                self.monitor_tx.send(MonitorCmd::Loaded {
-                    start: self.start.unwrap(),
-                    end: self.end.unwrap()
-                }).unwrap();
+                self.monitor_tx
+                    .send(MonitorCmd::Loaded {
+                        start: self.start.unwrap(),
+                        end: self.end.unwrap(),
+                    })
+                    .unwrap();
 
                 // Wait for it to be ready, and then move to the proper position
                 self.play().unwrap();
@@ -358,10 +356,12 @@ impl Player {
                 self.end = self.raw_duration();
 
                 // Send the updated position to the tracker
-                self.monitor_tx.send(MonitorCmd::Loaded {
-                    start: self.start.unwrap(),
-                    end: self.end.unwrap()
-                }).unwrap();
+                self.monitor_tx
+                    .send(MonitorCmd::Loaded {
+                        start: self.start.unwrap(),
+                        end: self.end.unwrap(),
+                    })
+                    .unwrap();
             }
         }
         Ok(())
